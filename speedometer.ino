@@ -7,17 +7,38 @@
  *
  * @copyright Copyright (c) 2021-2022
  *
+ *
  */
+
+#include <Arduino_LSM6DS3.h>
+
+
+float omega_x, omega_y, omega_z = 0;
+
+float a_f, g_f;
+
+const float lengthRobot = 0.2775;
+
+double dOmega = -10;
+double dSpeed = 0.05;
+
+bool firstVal;
+float fox, foy, foz;
+double eint;
+
 
 // Wheel PWM pin (must be a PWM pin)
 int EA = 6;
+int EB = 12;
 
 // Wheel direction digital pins
 int I1 = 7;
 int I2 = 4;
-
+int I3 = 11;
+int I4 = 10;
 // Motor PWM command variable [0-255]
-byte u = 0;
+double uR = 0;
+double uL = 0;
 
 // Left wheel encoder digital pins
 const byte SIGNAL_A = 2;
@@ -75,6 +96,54 @@ void decodeEncoderTicksR()
         encoder_ticksR++;
     }
 }
+
+double vehicleSpeed(double v_L, double v_R){
+  double v;
+  v = 0.5 * (v_L + v_R);
+  return v;
+}
+
+double ENowR(double vRDesired, double vR){
+  return vRDesired - vR;
+}
+double ENowL(double vLDesired, double vL){
+  return vLDesired - vL;
+}
+double GetVLDesired(double vDesired, double ODesired){
+  return vDesired - ODesired * 0.5 * lengthRobot;
+}
+double GetVRDesired(double vDesired, double ODesired){
+  return vDesired + ODesired * 0.5 * lengthRobot;
+}
+
+double turningRate(float vr, float vl){
+  double turningRate = (1/0.2775) * (vr - vl);
+  return turningRate;
+}
+
+short PIControllerR(double e_now, double k_P, double e_int, double k_I){
+  short u;
+  u = (short)(k_P * e_now + k_I * e_int);
+  if(u > 255){
+    u = 255;
+  } else if (u < 255){
+    u = -255;
+  }
+  Serial.println("Calling it");
+  return u;
+}
+short PIControllerL(double e_now, double k_P, double e_int, double k_I){
+  short u;
+  u = (short)(k_P * e_now + k_I * e_int);
+  if(u > 255){
+    u = 255;
+  } else if (u < -255){
+    u = -255;
+  }
+  Serial.println("Calling it");
+  return u;
+}
+
 void setup()
 {
     // Open the serial port at 9600 bps
@@ -82,8 +151,11 @@ void setup()
 
     // Set the pin modes for the motor driver
     pinMode(EA, OUTPUT);
+    pinMode(EB, OUTPUT);
     pinMode(I1, OUTPUT);
     pinMode(I2, OUTPUT);
+    pinMode(I3, OUTPUT);
+    pinMode(I4, OUTPUT);
 
     // Set the pin modes for the encoders
     pinMode(SIGNAL_A, INPUT);
@@ -99,6 +171,35 @@ void setup()
     // Print a message
     Serial.print("Program initialized.");
     Serial.print("\n");
+
+      Serial.begin(115200);
+
+  while(!Serial){
+    delay(10);
+  }
+
+  Serial.println();
+
+  // Check board init
+  if (!IMU.begin()){
+    // Print err
+    Serial.println("IMU init  failed");
+    while(1){
+      delay(10);
+    }
+  }
+
+  a_f = IMU.accelerationSampleRate();
+  g_f = IMU.gyroscopeSampleRate();
+
+  // Print sample rate
+  Serial.println("Accel Sample Rate: ");
+  Serial.print(a_f);
+  Serial.println("Gyro Sample Rate: ");
+  Serial.print(g_f);
+
+  
+    
 }
 
 void loop()
@@ -113,7 +214,7 @@ void loop()
         omega_R = 2.0 * PI * ((double)encoder_ticksR / (double)TPR) * 1000.0 / (double)(t_now - t_last);
 
         // Print some stuff to the serial monitor
-      
+        /*
         Serial.print("Estimated left wheel speed: ");
         Serial.print(omega_L);
         Serial.print(" rad/s");
@@ -129,21 +230,60 @@ void loop()
         Serial.print(-omega_R*RHO);
         Serial.print(" m/s");
         Serial.print("\n");
+        */
         // Record the current time [ms]
         t_last = t_now;
 
         // Reset the encoder ticks counter
         encoder_ticksL = 0;
         encoder_ticksR = 0;
+
+          if (IMU.gyroscopeAvailable()){
+    if(firstVal){
+          IMU.readGyroscope(fox, foy, foz);
+          firstVal = false;
     }
 
+    IMU.readGyroscope(omega_x, omega_y, omega_z);
+    omega_x = omega_x - fox;
+    omega_y = omega_y - foy;
+    omega_z = omega_z - foz;
+
+
+    /*
+    Serial.println("Gyroscope Measurements: ");
+    Serial.print(omega_x);
+    Serial.print("\t");
+    Serial.print(omega_y);
+    Serial.print("\t");
+    Serial.print(omega_z);
+    Serial.print(" deg/s\n");
+
+    Serial.println(turningRate(-omega_R*RHO, omega_L*RHO));
+    */
+
+    }
+
+    double enowR = ENowR(GetVRDesired(dSpeed, dOmega), omega_R);
+    double enowL = ENowL(GetVLDesired(dSpeed, dOmega), omega_L);
+
+    double eintR = eintR + enowR;
+    double eintL = eintL + enowL;
     // Set the wheel motor PWM command [0-255]
-    u = 128;
+    uR = PIControllerR(enowR, 200, eintR, 100); // Using R for now but they are diff (L and R)
+    uL = PIControllerL(enowL, 200, eintL, 100);
 
     // Select a direction
     digitalWrite(I1, LOW);
     digitalWrite(I2, HIGH);
+    digitalWrite(I3, HIGH);
+    digitalWrite(I4, LOW);
 
     // PWM command to the motor driver
-    analogWrite(EA, u);
+    analogWrite(EA, (-1)*uR);
+    analogWrite(EB, (-1)*uL);
+  }
+
+      
+    
 }
